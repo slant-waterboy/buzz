@@ -1596,16 +1596,23 @@ fn validate_update_channel_fields(
     description: Option<&str>,
     visibility: Option<&str>,
     ttl_change: Option<Option<i32>>,
+    posting: Option<buzz_sdk::ChannelPosting>,
 ) -> Result<(), CliError> {
-    if name.is_none() && description.is_none() && visibility.is_none() && ttl_change.is_none() {
+    if name.is_none()
+        && description.is_none()
+        && visibility.is_none()
+        && ttl_change.is_none()
+        && posting.is_none()
+    {
         return Err(CliError::Usage(
-            "at least one field required (--name, --description, --visibility, --ttl, --no-ttl)"
+            "at least one field required (--name, --description, --visibility, --ttl, --no-ttl, --posting)"
                 .into(),
         ));
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_update_channel(
     client: &BuzzClient,
     channel_id: &str,
@@ -1614,6 +1621,7 @@ pub async fn cmd_update_channel(
     visibility: Option<&str>,
     ttl: Option<i64>,
     no_ttl: bool,
+    posting: Option<buzz_sdk::ChannelPosting>,
 ) -> Result<(), CliError> {
     // Outer Option: None leaves TTL unchanged. Inner: Some(secs) sets it,
     // None (from --no-ttl) clears it, making the channel permanent.
@@ -1623,12 +1631,18 @@ pub async fn cmd_update_channel(
         (None, false) => None,
     };
 
-    validate_update_channel_fields(name, description, visibility, ttl_change)?;
+    validate_update_channel_fields(name, description, visibility, ttl_change, posting)?;
     let channel_uuid = parse_uuid(channel_id)?;
 
-    let builder =
-        buzz_sdk::build_update_channel(channel_uuid, name, description, visibility, ttl_change)
-            .map_err(|e| CliError::Other(format!("build_update_channel failed: {e}")))?;
+    let builder = buzz_sdk::build_update_channel(
+        channel_uuid,
+        name,
+        description,
+        visibility,
+        ttl_change,
+        posting,
+    )
+    .map_err(|e| CliError::Other(format!("build_update_channel failed: {e}")))?;
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
@@ -1929,6 +1943,7 @@ pub async fn dispatch(
             visibility,
             ttl,
             no_ttl,
+            posting,
         } => {
             let visibility = visibility.as_ref().map(|v| v.to_string());
             cmd_update_channel(
@@ -1939,6 +1954,7 @@ pub async fn dispatch(
                 visibility.as_deref(),
                 ttl,
                 no_ttl,
+                posting.map(Into::into),
             )
             .await
         }
@@ -2128,7 +2144,7 @@ mod tests {
 
     #[test]
     fn update_channel_fields_rejects_empty_update() {
-        let result = validate_update_channel_fields(None, None, None, None);
+        let result = validate_update_channel_fields(None, None, None, None, None);
         assert!(matches!(result, Err(CliError::Usage(_))));
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("at least one field required"));
@@ -2137,7 +2153,7 @@ mod tests {
 
     #[test]
     fn update_channel_fields_accepts_visibility_only_update() {
-        let result = validate_update_channel_fields(None, None, Some("open"), None);
+        let result = validate_update_channel_fields(None, None, Some("open"), None, None);
         assert!(result.is_ok(), "visibility-only update should be accepted");
     }
 
