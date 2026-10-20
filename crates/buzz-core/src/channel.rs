@@ -296,7 +296,9 @@ impl FromStr for ChannelType {
 /// A member's role within a channel.
 ///
 /// The hierarchy for permission checks is: Owner > Admin > Member > Guest.
-/// Bot is a **separate designation** — it is not part of the linear hierarchy.
+/// Bot has the same permissions as Member. The relay stores `bot` instead of
+/// `member` for a key with a recorded agent owner, so the role only labels an
+/// owned agent; it grants and refuses nothing extra.
 /// Use [`MemberRole::permission_level`] for numeric comparisons in authorization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberRole {
@@ -308,7 +310,8 @@ pub enum MemberRole {
     Member,
     /// Read-only external participant.
     Guest,
-    /// Automated agent or integration (not in the role hierarchy).
+    /// A member whose key has a recorded agent owner. Same permissions as
+    /// [`MemberRole::Member`]; only the relay chooses it.
     Bot,
 }
 
@@ -329,6 +332,13 @@ impl MemberRole {
         matches!(self, Self::Owner | Self::Admin)
     }
 
+    /// Whether this is the ordinary member role, `member` or `bot`. A client
+    /// may send either; the relay stores `bot` exactly when the key has a
+    /// recorded agent owner.
+    pub fn is_ordinary_member(&self) -> bool {
+        matches!(self, Self::Member | Self::Bot)
+    }
+
     /// Whether this role may write in a `posting = members` (announce)
     /// channel. Every role except [`MemberRole::Guest`] may; a bot counts as
     /// a member.
@@ -338,21 +348,18 @@ impl MemberRole {
 
     /// Numeric permission level for authorization comparisons.
     ///
-    /// Higher = more privileged. Bot returns 0 (must use explicit grants).
+    /// Higher = more privileged. Bot has the same level as Member.
     /// Use `role.permission_level() >= required.permission_level()` for checks.
     pub fn permission_level(self) -> u8 {
         match self {
             Self::Owner => 4,
             Self::Admin => 3,
-            Self::Member => 2,
+            Self::Member | Self::Bot => 2,
             Self::Guest => 1,
-            Self::Bot => 0,
         }
     }
 
     /// Returns true if this role meets or exceeds the required role's permission level.
-    ///
-    /// Bot never meets any requirement (returns false for all non-Bot requirements).
     pub fn has_at_least(self, required: MemberRole) -> bool {
         self.permission_level() >= required.permission_level()
     }
@@ -554,6 +561,32 @@ mod tests {
                 ChannelPosting::Members,
                 "{unknown:?}"
             );
+        }
+    }
+
+    #[test]
+    fn bot_has_the_member_permission_level() {
+        assert_eq!(
+            MemberRole::Bot.permission_level(),
+            MemberRole::Member.permission_level()
+        );
+        for required in [
+            MemberRole::Owner,
+            MemberRole::Admin,
+            MemberRole::Member,
+            MemberRole::Guest,
+            MemberRole::Bot,
+        ] {
+            assert_eq!(
+                MemberRole::Bot.has_at_least(required),
+                MemberRole::Member.has_at_least(required),
+                "{required}"
+            );
+        }
+        assert!(MemberRole::Bot.is_ordinary_member());
+        assert!(MemberRole::Member.is_ordinary_member());
+        for role in [MemberRole::Owner, MemberRole::Admin, MemberRole::Guest] {
+            assert!(!role.is_ordinary_member(), "{role}");
         }
     }
 

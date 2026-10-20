@@ -162,12 +162,14 @@ pub fn decide_put_user(
     // that skip this validator); rejecting here too means the client gets a
     // real error instead of an OK for an event whose side effect then fails.
     // Re-adding at the same role stays idempotent — the huddle bot-add path
-    // relies on that.
+    // relies on that. `member` and `bot` are the same role here: `add_member`
+    // stores whichever one the target's agent-owner record decides, so asking
+    // for the other one changes nothing.
     if let Some((existing, role)) = members
         .iter()
         .find(|m| m.pubkey == target)
         .zip(requested_role)
-        .filter(|(m, role)| m.role != role.as_str())
+        .filter(|(m, role)| !is_same_role(&m.role, *role))
     {
         if !actor_role.is_some_and(|r| r.is_elevated()) {
             return Err(ChannelAuthzError::RoleChangeDenied);
@@ -183,6 +185,14 @@ pub fn decide_put_user(
     }
 
     Ok(PutUserDecision::CheckAddPolicy)
+}
+
+/// Whether the stored role string `stored` already is `requested`, counting
+/// `member` and `bot` as one role. An unknown stored string never matches.
+fn is_same_role(stored: &str, requested: MemberRole) -> bool {
+    stored.parse::<MemberRole>().is_ok_and(|stored| {
+        stored == requested || (stored.is_ordinary_member() && requested.is_ordinary_member())
+    })
 }
 
 /// The extra kind:9000 rule for a `posting = members` (announce) channel,
@@ -564,6 +574,37 @@ mod tests {
                 2,
                 Some(MemberRole::Bot),
                 Ok(CheckAddPolicy),
+            ),
+            // `member` and `bot` are one role: asking for the other one is not
+            // a role change, so an unprivileged actor's re-add stays allowed.
+            (
+                "open",
+                &[(1, "owner"), (2, "bot")],
+                9,
+                None,
+                2,
+                Some(Member),
+                Ok(CheckAddPolicy),
+            ),
+            (
+                "private",
+                &[(1, "owner"), (2, "member"), (3, "member")],
+                3,
+                Some(Member),
+                2,
+                Some(Bot),
+                Ok(CheckAddPolicy),
+            ),
+            // A guest is a different role, so promoting one to `bot` is still
+            // a privileged role change.
+            (
+                "open",
+                &[(1, "owner"), (2, "guest")],
+                9,
+                None,
+                2,
+                Some(Bot),
+                Err(E::RoleChangeDenied),
             ),
             // An absent role tag requests no change, so the role-change gate
             // never fires even for an unprivileged actor.
